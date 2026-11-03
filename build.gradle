@@ -232,7 +232,7 @@ publishing {
             pom {
                 name = 'Yomu'
                 description = 'A dependency-free JSON5 library for Java 8 and later.'
-                url = 'https://github.com/Sumire-Labs/Thermometer'
+                url = 'https://github.com/Sumire-Labs/Yomu'
                 licenses {
                     license {
                         name = 'Blue Oak Model License 1.0.0'
@@ -244,8 +244,8 @@ publishing {
                     }
                 }
                 scm {
-                    url = 'https://github.com/Sumire-Labs/Thermometer'
-                    connection = 'scm:git:https://github.com/Sumire-Labs/Thermometer.git'
+                    url = 'https://github.com/Sumire-Labs/Yomu'
+                    connection = 'scm:git:https://github.com/Sumire-Labs/Yomu.git'
                 }
             }
         }
