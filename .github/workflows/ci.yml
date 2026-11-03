@@ -4,6 +4,12 @@ on:
     branches: ['**']
   pull_request:
   workflow_call:
+    inputs:
+      source_ref:
+        description: Git ref to test when called by the release workflow
+        required: false
+        type: string
+        default: ''
   workflow_dispatch:
 permissions:
   contents: read
@@ -16,6 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_ref || github.ref }}
           fetch-depth: 0
           fetch-tags: true
       - uses: actions/setup-java@v4
@@ -41,6 +48,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_ref || github.ref }}
           fetch-depth: 0
           fetch-tags: true
       - name: Install runtime under test
