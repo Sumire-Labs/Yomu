@@ -1,0 +1,123 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*', '[0-9]*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: yomu-release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Compute version with Cleanroom Versioning
+        run: bash gradlew --no-daemon writeReleaseMetadata
+      - id: version
+        run: node scripts/release.cjs version
+
+  verify:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: [version, verify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_VERSION: ${{ needs.version.outputs.version }}
+      PRERELEASE: ${{ needs.version.outputs.prerelease }}
+      MAVEN_URL: ${{ vars.ARTIFACT_KEEPER_RELEASE_URL || 'https://artifact.sumirelabs.com/maven/releases' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build both Maven publications locally
+        run: >-
+          bash gradlew --no-daemon
+          :publishMavenJavaPublicationToReleaseStagingRepository
+          :mapper:publishMavenJavaPublicationToReleaseStagingRepository
+          writeReleaseMetadata
+      - name: Check publication metadata and select release assets
+        run: node scripts/release.cjs prepare
+      - name: Save release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: yomu-${{ env.RELEASE_VERSION }}
+          path: build/release-assets/${{ env.RELEASE_VERSION }}/
+          if-no-files-found: error
+      - name: Check for an existing Maven publication
+        id: maven
+        env:
+          MAVEN_USER: ${{ secrets.MAVEN_USER }}
+          MAVEN_PASSWORD: ${{ secrets.MAVEN_PASSWORD }}
+        run: node scripts/release.cjs check
+      - name: Publish core and mapper to Artifact Keeper
+        if: steps.maven.outputs.published != 'true'
+        env:
+          ORG_GRADLE_PROJECT_sumireMavenUsername: ${{ secrets.MAVEN_USER }}
+          ORG_GRADLE_PROJECT_sumireMavenPassword: ${{ secrets.MAVEN_PASSWORD }}
+        run: >-
+          bash gradlew --no-daemon
+          :publishMavenJavaPublicationToSumireMavenRepository
+          :mapper:publishMavenJavaPublicationToSumireMavenRepository
+          -PmavenUrl="$MAVEN_URL"
+      - name: Verify uploaded Maven files
+        env:
+          MAVEN_USER: ${{ secrets.MAVEN_USER }}
+          MAVEN_PASSWORD: ${{ secrets.MAVEN_PASSWORD }}
+        run: |
+          node scripts/release.cjs check > build/maven-verification.txt
+          cat build/maven-verification.txt
+          grep -q 'Identical Maven publication already exists' build/maven-verification.txt
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets=(build/release-assets/"$RELEASE_VERSION"/*)
+          flags=()
+          if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
+          # A successful Maven upload can be retried without republishing identical files.
+          if gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft' > build/release-is-draft.txt; then
+            if [ "$(cat build/release-is-draft.txt)" != true ]; then
+              echo 'This GitHub Release is already published; leaving it unchanged.'
+              exit 0
+            fi
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --draft \
+              --title "Yomu $RELEASE_VERSION" --generate-notes "${flags[@]}"
+          fi
+          gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease="$PRERELEASE"

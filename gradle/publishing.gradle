@@ -1,0 +1,32 @@
+// Both modules share the repository and credential names.
+publishing.repositories {
+    maven {
+        name = 'sumireMaven'
+        def channel = rootProject.yomuReleaseTag ? 'releases' : 'snapshots'
+        url = uri(providers.gradleProperty('mavenUrl').getOrElse(
+                "https://artifact.sumirelabs.com/maven/${channel}"))
+        if (url.scheme != 'file') {
+            credentials(PasswordCredentials)
+            authentication { basic(org.gradle.authentication.http.BasicAuthentication) }
+        }
+    }
+    // Local staging is also used to validate both publications before any upload.
+    maven {
+        name = 'releaseStaging'
+        url = rootProject.layout.buildDirectory.dir('release-repository').get().asFile.toURI()
+    }
+}
+tasks.withType(Jar).configureEach {
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}
+tasks.withType(Javadoc).configureEach {
+    options.addBooleanOption('notimestamp', true)
+}
+tasks.withType(PublishToMavenRepository).configureEach {
+    doFirst {
+        if (repository.url.scheme != 'file' && !rootProject.yomuReleaseTag) {
+            throw new GradleException('Remote publication requires a validated GitHub tag build. Use publishToMavenLocal or releaseStaging for local builds.')
+        }
+    }
+}

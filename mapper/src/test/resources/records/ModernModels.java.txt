@@ -1,0 +1,90 @@
+package fixtures;
+
+import com.sumirelabs.yomu.mapper.*;
+import java.time.LocalDate;
+import java.util.List;
+
+public class ModernModels {
+    public record Entry(String label) { }
+    public record Shared(Entry first,Entry second) { }
+    public record Loop(List<Object> values) { }
+    public record Config(
+        @Json5Field(name="refresh_ticks",aliases={"old"},comment="tick interval") int refreshTicks,
+        @Json5Field(format="uuuu/MM/dd") LocalDate day,
+        List<Entry> entries) { }
+    public record Box<T>(T value,List<T> values) { }
+    public record Odd(int getCount) { }
+    public record Decimal(java.math.BigDecimal amount) { }
+    public record KeyMap(java.util.Map<Entry,java.math.BigDecimal> values) { }
+    public record StaticRecord(int count) {
+        @Json5Field(staticOutput=true,name="schema") public static final int SCHEMA=1;
+    }
+    public record Optional(@Json5Field(required=false) int count,
+                           @Json5Field(ignore=true) String secret,
+                           @Json5Field(read=false) boolean generated) {
+        public Optional { generated=true; }
+    }
+    public record Checked(int count) {
+        public Checked { if(count<0)throw new IllegalStateException("negative"); }
+    }
+    public record Explicit(String value) {
+        @Json5Creator public static Explicit make(@Json5Field(name="value") String value) {
+            return new Explicit(value.toUpperCase(java.util.Locale.ROOT));
+        }
+    }
+    public static void verifyGeneric(Json5Mapper mapper) {
+        Box<Integer> box=mapper.read("{value:3,values:[1,2]}",new TypeRef<Box<Integer>>(){});
+        if(!Integer.valueOf(3).equals(box.value()) || !Integer.valueOf(2).equals(box.values().get(1)))
+            throw new AssertionError("Record generic parameters were not resolved");
+        String output=mapper.writeAs(box,new TypeRef<Box<Integer>>(){});
+        if(!box.equals(mapper.read(output,new TypeRef<Box<Integer>>(){})))throw new AssertionError("Record generic round trip");
+    }
+    public static void verifyMapKeys(Json5Mapper mapper) {
+        Json5Mapper entries=mapper.withMapEncoding(MapEncoding.ENTRY_ARRAY).withBigDecimals(true).withStrictJson(true);
+        java.util.Map<Entry,java.math.BigDecimal> source=java.util.Collections.singletonMap(new Entry("x"),new java.math.BigDecimal("1.2500"));
+        KeyMap config=new KeyMap(source);
+        if(!config.equals(entries.read(entries.write(config),KeyMap.class)))throw new AssertionError("Record map keys and scale");
+        TypeRef<java.util.Map<Entry,java.math.BigDecimal>> type=new TypeRef<java.util.Map<Entry,java.math.BigDecimal>>(){};
+        if(!source.equals(entries.read(entries.writeAs(source,type),type)))throw new AssertionError("Record key root");
+    }
+    public static void verifyGraph(Json5Mapper mapper) {
+        Json5Mapper graph=mapper.withObjectGraph(true).withStrictJson(true);
+        Entry entry=new Entry("same");Shared source=new Shared(entry,entry);
+        Shared copy=graph.read(graph.write(source),Shared.class);
+        if(copy.first()!=copy.second() || !source.equals(copy))throw new AssertionError("Shared record identity");
+        Entry item=new Entry("generic");Box<Entry> box=new Box<>(item,java.util.Arrays.asList(item,item));
+        TypeRef<Box<Entry>> type=new TypeRef<Box<Entry>>(){};
+        Box<Entry> out=graph.read(graph.writeAs(box,type),type);
+        if(out.value()!=out.values().get(0) || out.value()!=out.values().get(1))throw new AssertionError("Generic graph record");
+        Config config=new Config(20,LocalDate.of(2024,2,29),java.util.Arrays.asList(entry,entry));
+        Config result=graph.read(graph.write(config),Config.class);
+        if(!config.equals(result) || result.entries().get(0)!=result.entries().get(1))throw new AssertionError("Graph record field format and comments");
+        java.util.ArrayList<Object> values=new java.util.ArrayList<>();Loop loop=new Loop(values);values.add(loop);
+        try { graph.read(graph.write(loop),Loop.class);throw new AssertionError("Constructor cycle accepted"); }
+        catch(MappingException expected) { if(!expected.getMessage().contains("creator, record or codec"))throw expected; }
+    }
+    public static void verifyPolymorphism(Json5Mapper mapper) {
+        for(boolean graph:new boolean[]{false,true}) {
+            Json5Mapper typed=mapper.withType("entry",Entry.class).withType("box",new TypeRef<Box<Entry>>(){}).withObjectGraph(graph).withStrictJson(true);
+            Entry entry=new Entry("typed");Box<Entry> source=new Box<>(entry,java.util.Arrays.asList(entry,entry));
+            Object decoded=typed.read(typed.writeAs(source,Object.class),Object.class);
+            if(!(decoded instanceof Box<?>))throw new AssertionError("Registered record type");
+            Box<?> result=(Box<?>)decoded;
+            if(!source.equals(result))throw new AssertionError("Generic registered record round trip");
+            if(graph && result.value()!=result.values().get(0))throw new AssertionError("Registered record sharing");
+        }
+    }
+    public static void verifyStreaming(Json5Mapper mapper) throws java.io.IOException {
+        for(boolean graph:new boolean[]{false,true}) {
+            Json5Mapper stream=mapper.withObjectGraph(graph).withType("entry",Entry.class).withType("box",new TypeRef<Box<Entry>>(){}).withStrictJson(true);
+            Entry entry=new Entry("stream");Box<Entry> source=new Box<>(entry,java.util.Arrays.asList(entry,entry));
+            java.io.StringWriter output=new java.io.StringWriter();stream.writeStreaming(source,output);
+            Box<?> result=(Box<?>)stream.readStreaming(new java.io.StringReader(output.toString()),Object.class);
+            if(!source.equals(result))throw new AssertionError("Streaming generic registered record");
+            if(graph && result.value()!=result.values().get(0))throw new AssertionError("Streaming record identity");
+            Config config=new Config(20,LocalDate.of(2024,2,29),java.util.Arrays.asList(entry,entry));
+            output=new java.io.StringWriter();stream.writeStreaming(config,output);
+            if(!config.equals(stream.readStreaming(new java.io.StringReader(output.toString()),Config.class)))throw new AssertionError("Streaming record formatting");
+        }
+    }
+}

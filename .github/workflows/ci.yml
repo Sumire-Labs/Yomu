@@ -1,0 +1,91 @@
+name: CI
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  atomic-save-windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        java: ['8', '25']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+      - name: Remember test runtime
+        shell: pwsh
+        run: '"TEST_JAVA_HOME=$env:JAVA_HOME" >> $env:GITHUB_ENV'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Test atomic file output on Windows
+        shell: pwsh
+        run: '.\gradlew.bat :test --tests com.sumirelabs.yomu.AtomicFileTest :mapper:test --tests com.sumirelabs.yomu.mapper.AtomicSaveMapperTest "-PtestJavaHome=$env:TEST_JAVA_HOME"'
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        java: ['8', '17', '21', '25', '26']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Install runtime under test
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+      - name: Remember test runtime
+        run: echo "TEST_JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+      - name: Install build JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+      - run: bash gradlew build -PtestJavaHome="$TEST_JAVA_HOME"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Test release tooling
+        run: node --test scripts/release.test.cjs
+      - name: Prepare official JSON5 reference corpus
+        run: |
+          mkdir -p build/conformance
+          curl --fail --location https://registry.npmjs.org/json5/-/json5-2.2.3.tgz --output build/conformance/reference.tgz
+          tar -xf build/conformance/reference.tgz -C build/conformance
+          node scripts/json5-conformance-corpus.cjs build/conformance/package build/conformance/cases.json
+      - name: Compare with official JSON5 implementation
+        run: bash gradlew json5Conformance -PtestJavaHome="$TEST_JAVA_HOME"
+      - name: Compare BigDecimal mode with official JSON5 implementation
+        run: bash gradlew json5Conformance -PtestJavaHome="$TEST_JAVA_HOME" -PbigDecimals=true -PconformanceReport=build/conformance/big-decimals.json
+      - name: Prepare strict JSON reference corpus
+        run: node scripts/json-conformance-corpus.cjs build/conformance/cases.json build/conformance/json-cases.json
+      - name: Compare strict JSON parser and writer
+        run: |
+          bash gradlew json5Conformance -PtestJavaHome="$TEST_JAVA_HOME" -PstrictJson=true -PconformanceCorpus=build/conformance/json-cases.json -PconformanceReport=build/conformance/strict-json.json -PwriterOutput=build/conformance/strict-writer.json
+          node scripts/check-json-writer.cjs build/conformance/strict-writer.json build/conformance/strict-writer-report.json
+          bash gradlew json5Conformance -PtestJavaHome="$TEST_JAVA_HOME" -PstrictJson=true -PbigDecimals=true -PconformanceCorpus=build/conformance/json-cases.json -PconformanceReport=build/conformance/strict-json-exact.json -PwriterOutput=build/conformance/strict-writer-exact.json
+          node scripts/check-json-writer.cjs build/conformance/strict-writer-exact.json build/conformance/strict-writer-exact-report.json
+      - name: Compare incremental parser and writer in both numeric modes
+        run: |
+          for mode in double exact; do
+            extra=""
+            if [ "$mode" = exact ]; then extra="-PbigDecimals=true"; fi
+            bash gradlew json5Conformance -PtestJavaHome="$TEST_JAVA_HOME" -Pstreaming=true $extra -PconformanceReport="build/conformance/stream-json5-$mode.json"
+            bash gradlew json5Conformance -PtestJavaHome="$TEST_JAVA_HOME" -Pstreaming=true $extra -PstrictJson=true -PconformanceCorpus=build/conformance/json-cases.json -PconformanceReport="build/conformance/stream-json-$mode.json" -PwriterOutput="build/conformance/stream-writer-$mode.json"
+            node scripts/check-json-writer.cjs "build/conformance/stream-writer-$mode.json" "build/conformance/stream-writer-$mode-report.json"
+          done

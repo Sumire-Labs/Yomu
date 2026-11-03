@@ -1,0 +1,59 @@
+.gradle/
+build/
+.idea/
+*.iml
+bin/
+out/
+target/
+
+# Generated binaries and JVM diagnostics (the Gradle Wrapper is required).
+*.class
+*.jar
+*.war
+*.ear
+!/gradle/wrapper/gradle-wrapper.jar
+*.hprof
+*.jfr
+hs_err_pid*
+replay_pid*
+
+# Local IDE, OS and temporary files.
+.vscode/
+.settings/
+.classpath
+.project
+.factorypath
+*.ipr
+*.iws
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.log
+*.tmp
+*.swp
+*.swo
+*~
+
+# Local environment settings; examples may be shared.
+.env
+.env.*
+!.env.example
+!.env.template
+
+# Detailed documents, historical measurements and binaries stay local.
+docs/
+*.[mM][dD]
+!/README.md
+!/BENCHMARKS.md
+!/LICENSE.md
+!/THIRD-PARTY-NOTICES.md
+!/src/test/resources/json5-tests/LICENSE.md
+!/src/test/resources/json5-tests/UPSTREAM.md
+
+# Keep local tooling private, except scripts required by GitHub Actions.
+/scripts/*
+!/scripts/json5-conformance-corpus.cjs
+!/scripts/json-conformance-corpus.cjs
+!/scripts/check-json-writer.cjs
+!/scripts/release.cjs
+!/scripts/release.test.cjs

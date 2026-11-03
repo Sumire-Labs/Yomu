@@ -1,0 +1,271 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+    id 'com.cleanroommc.versioning' version '3.4.0'
+}
+
+group = 'com.sumirelabs'
+if (providers.gradleProperty('releaseVersion').isPresent()) {
+    throw new GradleException('Cleanroom Versioning determines the version from Git; use a tag instead of -PreleaseVersion.')
+}
+ext.yomuReleaseTag = providers.environmentVariable('GITHUB_ACTIONS').getOrElse('') == 'true' &&
+        providers.environmentVariable('GITHUB_REF_TYPE').getOrElse('') == 'tag'
+status = yomuReleaseTag ? (versioning.stage.get().name() == 'RELEASE' ? 'release' : 'milestone') : 'integration'
+ext.testJavaExecutable = providers.gradleProperty('testJavaHome').map { javaHome ->
+    file(javaHome + '/bin/' + (System.getProperty('os.name').startsWith('Windows') ? 'java.exe' : 'java')).absolutePath
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_1_8
+    withSourcesJar()
+    withJavadocJar()
+}
+
+repositories { mavenCentral() }
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 8
+    options.encoding = 'UTF-8'
+}
+
+// Keep stack-trace source/line information without shipping debugger local-variable tables.
+// Test/fixture compilation retains its normal metadata, including explicitly requested -parameters.
+tasks.named('compileJava', JavaCompile) {
+    options.debugOptions.debugLevel = 'source,lines'
+}
+
+tasks.withType(Javadoc).configureEach {
+    options.encoding = 'UTF-8'
+    options.addBooleanOption('Xdoclint:all,-missing', true)
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+}
+
+sourceSets {
+    benchmark {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+    comparison {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+    lifecycle {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+    compatibility {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+}
+
+dependencies {
+    benchmarkImplementation 'org.openjdk.jmh:jmh-core:1.37'
+    benchmarkAnnotationProcessor 'org.openjdk.jmh:jmh-generator-annprocess:1.37'
+    benchmarkImplementation 'com.cedarsoftware:json-io:4.116.0'
+    comparisonImplementation 'org.openjdk.jmh:jmh-core:1.37'
+    comparisonAnnotationProcessor 'org.openjdk.jmh:jmh-generator-annprocess:1.37'
+    comparisonImplementation 'com.cedarsoftware:json-io:4.116.0'
+    comparisonImplementation 'dev.nolij:zson:0.6.0-dev.5'
+    comparisonImplementation 'com.github.cao-awa:Cason:1.0.37'
+    comparisonImplementation 'com.google.code.gson:gson:2.14.0'
+    comparisonImplementation 'com.fasterxml.jackson.core:jackson-databind:2.22.4'
+    lifecycleImplementation 'com.cedarsoftware:json-io:4.116.0'
+    lifecycleImplementation 'com.fasterxml.jackson.core:jackson-databind:2.22.4'
+    lifecycleImplementation project(':mapper')
+    lifecycleRuntimeOnly 'dev.nolij:zson:0.6.0-dev.5'
+    lifecycleRuntimeOnly 'com.github.cao-awa:Cason:1.0.37'
+}
+
+repositories {
+    maven { url = 'https://maven.blamejared.com'; content { includeGroup 'dev.nolij' } }
+    maven { url = 'https://jitpack.io'; content { includeGroup 'com.github.cao-awa' } }
+}
+
+configurations.comparisonCompileClasspath.attributes.attribute(
+        org.gradle.api.attributes.java.TargetJvmVersion.TARGET_JVM_VERSION_ATTRIBUTE, 21)
+configurations.comparisonRuntimeClasspath.attributes.attribute(
+        org.gradle.api.attributes.java.TargetJvmVersion.TARGET_JVM_VERSION_ATTRIBUTE, 21)
+// Modern competitors are loaded reflectively; the benchmark itself remains Java 8 bytecode.
+configurations.lifecycleRuntimeClasspath.attributes.attribute(
+        org.gradle.api.attributes.java.TargetJvmVersion.TARGET_JVM_VERSION_ATTRIBUTE, 21)
+
+tasks.named('compileComparisonJava', JavaCompile) {
+    javaCompiler = javaToolchains.compilerFor { languageVersion = JavaLanguageVersion.of(21) }
+    options.release = 21
+}
+
+// Relocate archived sources only in build/. Keep historical benchmark evidence unchanged.
+tasks.register('prepareRenamedBaselines', Sync) {
+    into layout.buildDirectory.dir('renamed-baselines')
+    from('docs/benchmarks/legacy-core') {
+        include 'Thermometer.java', 'Json5Writer.java'
+        into 'legacy-core'
+        rename 'Thermometer.java', 'Yomu.java'
+    }
+    from('docs/benchmarks/baseline') { include 'Parser.java'; into 'baseline' }
+    from('docs/benchmarks/string-sharing-baseline') { include 'Parser.java'; into 'string-sharing-baseline' }
+    filteringCharset = 'UTF-8'
+    filter { String line -> line.replace('Thermometer', 'Yomu').replace('thermometer', 'yomu') }
+}
+
+tasks.register('compileBaselineJava', JavaCompile) {
+    dependsOn 'prepareRenamedBaselines'
+    description = 'Builds the archived pre-optimization parser for reproducible before/after measurements.'
+    source fileTree('src/main/java') {
+        include '**/Json5Exception.java', '**/Json5Unicode.java', '**/CommentedValue.java', '**/StringEscapes.java'
+    }
+    source layout.buildDirectory.file('renamed-baselines/legacy-core/Yomu.java')
+    source layout.buildDirectory.file('renamed-baselines/legacy-core/Json5Writer.java')
+    source layout.buildDirectory.file('renamed-baselines/baseline/Parser.java')
+    classpath = files()
+    destinationDirectory = layout.buildDirectory.dir('classes/java/baseline')
+}
+
+tasks.register('compileSharingBaselineJava', JavaCompile) {
+    source fileTree('src/main/java') {
+        include '**/Json5Exception.java', '**/Json5Unicode.java', '**/CommentedValue.java', '**/StringEscapes.java'
+    }
+    // Required by StringSharingTest; available in a clean checkout without local reports.
+    source fileTree('src/testBaseline/java') { include '**/*.java' }
+    classpath = files()
+    destinationDirectory = layout.buildDirectory.dir('classes/java/sharingBaseline')
+}
+
+tasks.register('lifecycleAgent', Jar) {
+    archiveFileName = 'yomu-lifecycle-agent.jar'
+    from(sourceSets.lifecycle.output) { include '**/HeapAgent.class' }
+    manifest { attributes 'Premain-Class': 'com.sumirelabs.yomu.benchmark.HeapAgent' }
+}
+
+tasks.register('prepareLifecycleBenchmarks') {
+    group = 'verification'
+    description = 'Builds the Java 8 lifecycle benchmark, sizing agent and pre-sharing baseline.'
+    dependsOn 'lifecycleClasses', 'lifecycleAgent', 'compileSharingBaselineJava'
+    doLast {
+        def paths = [
+                classpath: sourceSets.lifecycle.runtimeClasspath.asPath,
+                mainClasses: layout.buildDirectory.dir('classes/java/main').get().asFile.absolutePath,
+                baselineClasses: layout.buildDirectory.dir('classes/java/sharingBaseline').get().asFile.absolutePath,
+                agent: tasks.named('lifecycleAgent', Jar).get().archiveFile.get().asFile.absolutePath]
+        layout.buildDirectory.file('lifecycle-paths.json').get().asFile.text = groovy.json.JsonOutput.toJson(paths)
+    }
+}
+
+tasks.register('prepareCurrentBenchmarks') {
+    group = 'verification'
+    dependsOn 'prepareLifecycleBenchmarks', 'compileComparisonJava'
+    doLast {
+        layout.buildDirectory.file('current-benchmark-paths.json').get().asFile.text = groovy.json.JsonOutput.toJson([
+            lifecycle: sourceSets.lifecycle.runtimeClasspath.asPath,
+            comparison: sourceSets.comparison.runtimeClasspath.asPath,
+            agent: tasks.named('lifecycleAgent', Jar).get().archiveFile.get().asFile.absolutePath])
+    }
+}
+
+tasks.register('json5Conformance', JavaExec) {
+    group = 'verification'
+    description = 'Compares against a corpus generated by the official JSON5 JavaScript parser.'
+    classpath = sourceSets.compatibility.runtimeClasspath
+    mainClass = 'com.sumirelabs.yomu.compatibility.Json5Conformance'
+    args providers.gradleProperty('conformanceCorpus').getOrElse('build/conformance/cases.json'),
+            providers.gradleProperty('conformanceReport').getOrElse('build/conformance/report.json')
+    if (providers.gradleProperty('bigDecimals').getOrElse('false').toBoolean()) args '--big-decimals'
+    if (providers.gradleProperty('strictJson').getOrElse('false').toBoolean()) args '--strict-json'
+    if (providers.gradleProperty('streaming').getOrElse('false').toBoolean()) args '--streaming'
+    if (providers.gradleProperty('writerOutput').isPresent()) args '--writer-output', providers.gradleProperty('writerOutput').get()
+    if (providers.gradleProperty('testJavaHome').isPresent()) {
+        executable = rootProject.testJavaExecutable.get()
+    }
+}
+
+tasks.register('compareParsers', JavaExec) {
+    group = 'verification'
+    description = 'Checks value equivalence, then benchmarks six parsers on supported inputs (JDK 21+).'
+    classpath = sourceSets.comparison.runtimeClasspath
+    if (providers.gradleProperty('benchmarkBaseline').isPresent()) {
+        dependsOn 'compileBaselineJava'
+        classpath = (sourceSets.comparison.runtimeClasspath - sourceSets.main.output) +
+                files(tasks.named('compileBaselineJava').flatMap { it.destinationDirectory })
+    }
+    javaLauncher = javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(providers.gradleProperty('benchmarkJavaVersion').getOrElse('21').toInteger())
+    }
+    mainClass = 'com.sumirelabs.yomu.comparison.CompareBenchmark'
+    args providers.gradleProperty('compareArgs').getOrElse('--check').split(' ')
+}
+
+tasks.register('jmh', JavaExec) {
+    group = 'verification'
+    description = 'Runs JMH parsing comparisons (use -PjmhArgs to override arguments).'
+    classpath = sourceSets.benchmark.runtimeClasspath
+    mainClass = 'org.openjdk.jmh.Main'
+    args providers.gradleProperty('jmhArgs').getOrElse(
+            'ParseBenchmark -prof gc -rf json -rff build/jmh-results.json').split(' ')
+}
+
+test {
+    useJUnit()
+    dependsOn 'compileSharingBaselineJava'
+    systemProperty 'yomu.baselineClasses', layout.buildDirectory.dir('classes/java/sharingBaseline').get().asFile.absolutePath
+    if (providers.gradleProperty('testJavaHome').isPresent()) {
+        executable = rootProject.testJavaExecutable.get()
+    }
+    testLogging { events 'failed', 'skipped' }
+}
+
+tasks.withType(Jar).configureEach {
+    from('LICENSE.md') { into 'META-INF' }
+    from('THIRD-PARTY-NOTICES.md') { into 'META-INF' }
+    manifest { attributes 'Automatic-Module-Name': 'com.sumirelabs.yomu' }
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            artifactId = 'yomu'
+            from components.java
+            pom {
+                name = 'Yomu'
+                description = 'A dependency-free JSON5 library for Java 8 and later.'
+                url = 'https://github.com/Sumire-Labs/Thermometer'
+                licenses {
+                    license {
+                        name = 'Blue Oak Model License 1.0.0'
+                        url = 'https://blueoakcouncil.org/license/1.0.0'
+                    }
+                    license {
+                        name = 'Unicode License v3 (Unicode category data only)'
+                        url = 'https://www.unicode.org/license.txt'
+                    }
+                }
+                scm {
+                    url = 'https://github.com/Sumire-Labs/Thermometer'
+                    connection = 'scm:git:https://github.com/Sumire-Labs/Thermometer.git'
+                }
+            }
+        }
+    }
+}
+apply from: rootProject.file('gradle/publishing.gradle')
+
+// The release workflow consumes the plugin result instead of reimplementing its Git policy.
+def computedReleaseMetadata = groovy.json.JsonOutput.toJson([
+        version: versioning.version.get(),
+        stage: versioning.stage.get().name().toLowerCase(Locale.ROOT),
+        tag: providers.environmentVariable('GITHUB_REF_NAME').getOrElse(''),
+        tagBuild: yomuReleaseTag
+    ])
+tasks.register('writeReleaseMetadata') {
+    def output = layout.buildDirectory.file('release-version.json')
+    inputs.property('releaseMetadata', computedReleaseMetadata)
+    outputs.file(output)
+    doLast {
+        output.get().asFile.parentFile.mkdirs()
+        output.get().asFile.text = computedReleaseMetadata
+    }
+}

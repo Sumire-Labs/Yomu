@@ -1,0 +1,67 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+}
+
+group = rootProject.group
+version = rootProject.version
+status = rootProject.status
+base.archivesName = 'yomu-mapper'
+repositories { mavenCentral() }
+dependencies {
+    api project(':')
+    testImplementation 'junit:junit:4.13.2'
+}
+java {
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_1_8
+    withSourcesJar()
+    withJavadocJar()
+}
+tasks.withType(JavaCompile).configureEach {
+    options.release = 8
+    options.encoding = 'UTF-8'
+}
+
+// Runtime mapping uses annotations, generic signatures and MethodParameters, not debugger locals.
+tasks.named('compileJava', JavaCompile) {
+    options.debugOptions.debugLevel = 'source,lines'
+}
+tasks.withType(Javadoc).configureEach {
+    options.encoding = 'UTF-8'
+    options.addBooleanOption('Xdoclint:all,-missing', true)
+}
+test {
+    useJUnit()
+    if (providers.gradleProperty('testJavaHome').isPresent()) {
+        executable = rootProject.testJavaExecutable.get()
+    }
+}
+tasks.withType(Jar).configureEach {
+    from(rootProject.file('LICENSE.md')) { into 'META-INF' }
+    manifest { attributes 'Automatic-Module-Name': 'com.sumirelabs.yomu.mapper' }
+}
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            artifactId = 'yomu-mapper'
+            from components.java
+            pom {
+                name = 'Yomu Mapper'
+                description = 'Optional Java class mapping for Yomu JSON5.'
+                url = 'https://github.com/Sumire-Labs/Thermometer'
+                licenses {
+                    license {
+                        name = 'Blue Oak Model License 1.0.0'
+                        url = 'https://blueoakcouncil.org/license/1.0.0'
+                    }
+                }
+                scm {
+                    url = 'https://github.com/Sumire-Labs/Thermometer'
+                    connection = 'scm:git:https://github.com/Sumire-Labs/Thermometer.git'
+                }
+            }
+        }
+    }
+}
+apply from: rootProject.file('gradle/publishing.gradle')
